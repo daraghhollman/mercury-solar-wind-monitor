@@ -89,7 +89,7 @@ def filter_messenger_mag(
                 (pl.col("End Time") - buffer).alias("End Time"),
             ]
         )
-        # Drop intervals that the buffer has consumed entirely
+        # drop intervals that the buffer has consumed entirely
         .filter(pl.col("Start Time") < pl.col("End Time"))
     )
 
@@ -102,24 +102,15 @@ def filter_messenger_mag(
             right_on="Start Time",
             strategy="backward",  # find the most recent BS_OUT before each row
         )
-        .filter(pl.col("UTC") < pl.col("End Time"))  # drop rows past the next BS_IN
-    )
-
-    gap_rows = (
-        filtered_data.group_by("Start Time", maintain_order=True)
-        .agg(pl.col("End Time").first())
         .with_columns(
-            [
-                pl.col("End Time").alias("UTC"),
-                *[
-                    pl.lit(None).cast(data.schema[c]).alias(c)
-                    for c in data.columns
-                    if c != "UTC"
-                ],
-            ]
+            pl.when(pl.col("UTC") < pl.col("End Time"))
+            .then(pl.col(col))
+            .otherwise(None)
+            .alias(col)
+            for col in data.columns
+            if col != "UTC"
         )
-        .select(filtered_data.columns)
+        .select(data.columns)
     )
 
-    out = pl.concat([filtered_data, gap_rows]).sort("UTC").select(data.columns)
-    return out
+    return filtered_data

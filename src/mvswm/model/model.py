@@ -11,7 +11,7 @@ from keras.optimizers import Optimizer
 from numpy.typing import NDArray
 from typing import Any, Tuple
 
-from mvswm.model import TimeScaler
+from mvswm.model.scalling import TimeScaler
 
 __all__ = [
     "SolarWindModel",

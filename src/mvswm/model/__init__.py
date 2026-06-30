@@ -1,9 +1,10 @@
-from .gap_generator import GapGenerator
-from .scalling import TimeScaler
+from .gap_manager import DataGap, GapManager
 from .model import SolarWindModel
+from .scalling import TimeScaler
 
 __all__ = [
-    "GapGenerator",
     "SolarWindModel",
     "TimeScaler",
+    "GapManager",
+    "DataGap",
 ]
