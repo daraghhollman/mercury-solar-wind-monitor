@@ -1,11 +1,13 @@
 import datetime as dt
-from typing import Dict, Tuple
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 from gpflow.kernels import RationalQuadratic
 from numpy.typing import NDArray
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sunpy.time import TimeRange
 
 from mvswm.data import Spacecraft, filter_messenger_mag
@@ -28,7 +30,7 @@ def main() -> None:
     # the data based on the number of data-points. A reasonable range is between
     # 1k and 10k.
     split_length: int = 1000
-    n_splits: int = len(data) // split_length
+    n_splits: int = round(len(data) / split_length)
     for split_index in range(n_splits):
 
         split_data = data.slice(split_index * split_length, split_length)
@@ -36,17 +38,27 @@ def main() -> None:
         # This data will have some data-gaps inherent to MESSENGER's orbit
         # around Mercury. We also need to add additional artificial data-gaps
         # where we will test the model's performance.
-
-        # GapManager.get_real_gaps
-        # GapManager.get_artificial_gaps
+        # With a default gap placement strategy of 'middle', the gaps are
+        # places in between two real gaps (when they are able to fit). This
+        # means that it is possible to have data splits without an artificial
+        # gap. We should just skip these instead of training on them.
         gm = GapManager(split_data, gap_length=dt.timedelta(hours=3))
 
-        # Reshape data for model
+        training_data = gm.training_data
+        evaluation_data = gm.evaluation_data
+
+        if training_data is None or evaluation_data is None:
+            # If, based on the gaps, we don't have both a training and an
+            # evaluation dataset in this window, skip.
+            continue
+
         component_predictions: Dict[str, Tuple] = {}
         for component in components:
-            X: NDArray = split_data.drop_nulls()["UTC"].to_numpy().reshape(-1, 1)
+
+            # Reshape data for model
+            X: NDArray = training_data.drop_nulls()["UTC"].to_numpy().reshape(-1, 1)
             Y: NDArray = (
-                split_data.drop_nulls()[component]
+                training_data.drop_nulls()[component]
                 .to_numpy()
                 .reshape(-1, 1)
                 .astype("float64")
@@ -78,7 +90,14 @@ def main() -> None:
 
         for component, colour in zip(components, component_colours):
             ax.scatter(
-                split_data["UTC"], split_data[component], marker=".", color=colour
+                training_data["UTC"], training_data[component], marker=".", color=colour
+            )
+            ax.scatter(
+                evaluation_data["UTC"],
+                evaluation_data[component],
+                marker=".",
+                color=colour,
+                alpha=0.5,
             )
 
         # Plot predictions
@@ -94,6 +113,68 @@ def main() -> None:
             )
 
         plt.show()
+
+
+@dataclass
+class MetricSummary:
+    name: str
+    values: List[float]
+
+    @property
+    def mean(self):
+        return np.mean(self.values)
+
+    @property
+    def median(self):
+        return np.median(self.values)
+
+    @property
+    def sd(self):
+        return np.std(self.values)
+
+    def __repr__(self):
+        return f"{self.name}: {self.mean:.3f} ({self.median:.3f}) +/- {self.sd:.3f}"
+
+
+def get_metrics(
+    true_data: pl.DataFrame,
+    model_predictions: pl.DataFrame,
+    y_variables: List[str] = [
+        "|B| [nT]",
+        "Bx [nT]",
+        "By [nT]",
+        "Bz [nT]",
+    ],
+    metrics: List[Callable] = [
+        # A list of functions which all take input: (y_true, y_pred)
+        r2_score,
+        mean_absolute_error,
+        root_mean_squared_error,
+    ],
+) -> List[MetricSummary]:
+
+    # First check that all `y_variables` exist in the data
+    for parameter in y_variables:
+        if (
+            parameter not in true_data.columns
+            or parameter not in model_predictions.columns
+        ):
+            raise ValueError(
+                f"Parameter {parameter} does not exist in input data. Cannot determine metrics."
+            )
+
+    metric_summaries: List[MetricSummary] = []
+    for metric in metrics:
+        metric_scores: List[float] = []
+        for parameter in y_variables:
+
+            result = metric(true_data[parameter], model_predictions[parameter])
+            metric_scores.append(result)
+
+        this_metric = MetricSummary(metric.__name__, metric_scores)
+        metric_summaries.append(this_metric)
+
+    return metric_summaries
 
 
 def get_messenger_solar_wind_data(
