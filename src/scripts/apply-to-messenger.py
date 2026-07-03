@@ -1,4 +1,3 @@
-from matplotlib.lines import Line2D
 import datetime as dt
 from dataclasses import dataclass
 from typing import Callable, List
@@ -9,6 +8,7 @@ import polars as pl
 import tensorflow as tf
 from gpflow.kernels import RationalQuadratic
 from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 from scipy.stats import gaussian_kde, pearsonr
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
@@ -23,7 +23,6 @@ COMPONENT_COLOURS = [BLACK, RED, GREEN, BLUE]
 
 
 def main() -> None:
-
 
     data = get_messenger_solar_wind_data(
         TimeRange("2011-03-23", dt.timedelta(hours=120)),
@@ -46,7 +45,9 @@ def main() -> None:
 
         split_data = data.slice(split_index * split_length, split_length)
 
-        print(f"{dt.datetime.now()} | Training model on data from {split_data['UTC'][0]} to {split_data['UTC'][-1]}")
+        print(
+            f"{dt.datetime.now()} | Training model on data from {split_data['UTC'][0]} to {split_data['UTC'][-1]}"
+        )
 
         # This data will have some data-gaps inherent to MESSENGER's orbit
         # around Mercury. We also need to add additional artificial data-gaps
@@ -194,7 +195,7 @@ def main() -> None:
 
         fig, ax = plt.subplots()
 
-        for component, colour in zip(COMPONENTS, component_colours):
+        for component, colour in zip(COMPONENTS, COMPONENT_COLOURS):
             ax.scatter(
                 training_data["UTC"], training_data[component], marker=".", color=colour
             )
@@ -207,7 +208,7 @@ def main() -> None:
             )
 
         # Plot predictions
-        for component, colour in zip(COMPONENTS, component_colours):
+        for component, colour in zip(COMPONENTS, COMPONENT_COLOURS):
             ax.plot(
                 component_predictions["UTC"],
                 component_predictions[component + " Mean"],
@@ -226,7 +227,7 @@ def main() -> None:
             )
 
         # Plot baseline
-        for component, colour in zip(COMPONENTS, component_colours):
+        for component, colour in zip(COMPONENTS, COMPONENT_COLOURS):
             ax.plot(
                 baseline_predictions["UTC"],
                 baseline_predictions[component],
@@ -234,13 +235,39 @@ def main() -> None:
                 ls="dashed",
             )
 
+        # For each component show observed vs predicted
+        _, ax = plt.subplots()
+
+        for component, colour in zip(COMPONENTS, COMPONENT_COLOURS):
+            ax.scatter(
+                evaluation_data[component],
+                evaluation_predictions[component],
+                marker="o",
+                color=colour,
+            )
+            ax.scatter(
+                evaluation_data[component],
+                baseline_predictions[component],
+                marker="x",
+                color=colour,
+            )
+
+        ax.set(
+            aspect="equal",
+            xlabel="Observation [nT]",
+            ylabel="Predictions [nT]"
+        )
+
         plt.show()
         """
 
-    r = PerformanceReport(truths, predictions, baselines)
-    r.make_taylor_diagram()
+    fig, ax = plt.subplots(figsize=(6.5, 4), subplot_kw={"projection": "polar"})
 
-    plt.show()
+    r = PerformanceReport(truths, predictions, baselines)
+    r.make_taylor_diagram(ax)
+
+    fig.subplots_adjust(bottom=0.05, top=1, left=0.01, right=1)
+    fig.savefig("./figures/taylor.pdf", format="pdf", bbox_inches="tight")
 
 
 class PerformanceReport:
@@ -258,6 +285,9 @@ class PerformanceReport:
         self.baselines = baselines
 
     def make_taylor_diagram(self, ax: Axes | None = None) -> Axes:
+        """
+        Ax must be polar
+        """
 
         # Create a matplotlib axis if it doesn't exist.
         if ax is None:
@@ -270,8 +300,12 @@ class PerformanceReport:
             for component, colour in zip(COMPONENTS, COMPONENT_COLOURS):
                 prediction_std = prediction[component].std() / truth[component].std()
                 baseline_std = baseline[component].std() / truth[component].std()
-                prediction_corr = pearson_r_wrapper(truth[component], prediction[component])
-                baseline_corr = pearson_r_wrapper(truth[component], baseline[component])
+                prediction_corr = pearsonr(
+                    truth[component], prediction[component]
+                ).statistic
+                baseline_corr = pearsonr(
+                    truth[component], baseline[component]
+                ).statistic
 
                 ax.scatter(
                     np.arccos(prediction_corr),
@@ -286,7 +320,9 @@ class PerformanceReport:
                     marker="x",
                 )
 
-        correlation_ticks = np.array([0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1])
+        correlation_ticks = np.array(
+            [-0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1]
+        )
         theta_positions = np.arccos(correlation_ticks)
 
         ax.set(
@@ -295,17 +331,17 @@ class PerformanceReport:
             xticks=theta_positions,
             xticklabels=correlation_ticks,
             yticks=np.arange(0, 1.2 + 0.2, 0.2),
+            axisbelow=True,
         )
-
-        ax.text(0.5, -0.1, "$\sigma / \sigma_d$", transform=ax.transAxes)
-        ax.text(0.75, 0.75, "$r_p$", rotation=-45, transform=ax.transAxes)
+        ax.text(0.6, 0.02, "$\sigma / \sigma_d$", transform=ax.transAxes)
+        ax.text(0.75, 0.8, "$r_p$", rotation=-30, transform=ax.transAxes)
 
         # Add dashed line at y=1
         ax.axhline(y=1, lw=3, ls="dashed", color="black")
 
         # RMSE contours (concentric circles centered on the reference point)
         # Reference point is at (theta=0, r=1), i.e. correlation=1, sigma/sigma_d=1
-        theta_grid = np.linspace(0, np.pi / 2, 200)
+        theta_grid = np.linspace(0, np.pi, 200)
         r_grid = np.linspace(0, 1.2, 200)
         T, R = np.meshgrid(theta_grid, r_grid)
 
@@ -313,13 +349,16 @@ class PerformanceReport:
         # sigma_ref = 1 (normalized), sigma = R, theta = T
         RMSE = np.sqrt(1 + R**2 - 2 * R * np.cos(T))
 
-        rmse_levels = np.linspace(0.2, 1, 3)
+        rmse_levels = np.linspace(0.2, 2, 6)
         ax.contour(
-            T, R, RMSE,
+            T,
+            R,
+            RMSE,
             levels=rmse_levels,
             colors="gray",
             linestyles="dotted",
-            linewidths=3,
+            linewidths=2,
+            zorder=-2,
         )
 
         # A manual 'table-style' legend
@@ -327,29 +366,48 @@ class PerformanceReport:
 
         # Position: to the right of the main axes, in axes-fraction coordinates.
         # Adjust the [x0, y0, width, height] values to taste.
-        legend_ax = ax.inset_axes((0.9, 0.75, 0.32, 0.05 * n_rows + 0.08), transform=ax.transAxes)
+        legend_ax = ax.inset_axes(
+            (-0.1, 0.2, 0.2, 0.05 * n_rows + 0.08), transform=ax.transAxes
+        )
         legend_ax.set_xlim(0, 3)
         legend_ax.set_ylim(0, n_rows + 1)
         legend_ax.axis("off")
 
         # Column headers
-        legend_ax.text(1, n_rows + 0.5, "GPR", ha="center", va="center", fontweight="bold")
-        legend_ax.text(2, n_rows + 0.5, "LI", ha="center", va="center", fontweight="bold")
+        legend_ax.text(
+            1, n_rows + 0.5, "GPR", ha="center", va="center", fontweight="bold"
+        )
+        legend_ax.text(
+            2, n_rows + 0.5, "LI", ha="center", va="center", fontweight="bold"
+        )
 
         # Header underline
-        legend_ax.plot([0, 3], [n_rows + 0.05, n_rows + 0.05], color="black", linewidth=0.8)
+        legend_ax.plot(
+            [0, 3], [n_rows + 0.05, n_rows + 0.05], color="black", linewidth=0.8
+        )
 
         # One row per component
         for i, component in enumerate(COMPONENTS):
             row_y = n_rows - i - 0.5
             legend_ax.text(
-                0, row_y, component[:-4], ha="left", va="center", color=COMPONENT_COLOURS[i]
+                0,
+                row_y,
+                component[:-4],
+                ha="left",
+                va="center",
+                color=COMPONENT_COLOURS[i],
             )
             legend_ax.scatter([1], [row_y], color=COMPONENT_COLOURS[i], marker="o")
             legend_ax.scatter([2], [row_y], color=COMPONENT_COLOURS[i], marker="x")
 
             # faint row separator
-            legend_ax.plot([0, 3], [row_y - 0.5, row_y - 0.5], color="grey", linewidth=0.4, alpha=0.4)
+            legend_ax.plot(
+                [0, 3],
+                [row_y - 0.5, row_y - 0.5],
+                color="grey",
+                linewidth=0.4,
+                alpha=0.4,
+            )
 
         return ax
 
@@ -375,13 +433,6 @@ class MetricSummary:
         return f"{self.name}: {self.mean:.3f} ({self.median:.3f}) +/- {self.sd:.3f}"
 
 
-def pearson_r_wrapper(x, y):
-    """
-    Pulls out the statistic value from scipy.stats.pearsonr
-    """
-    return pearsonr(x, y).statistic
-
-
 def get_metrics(
     true_data: pl.DataFrame,
     model_predictions: pl.DataFrame,
@@ -393,7 +444,7 @@ def get_metrics(
     ],
     metrics: List[Callable] = [
         # A list of functions which all take input: (y_true, y_pred)
-        pearson_r_wrapper,
+        lambda x, y: pearsonr(x, y).statistic,
         r2_score,
         mean_absolute_error,
         root_mean_squared_error,

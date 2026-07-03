@@ -12,3 +12,4 @@ wheels/
 logs/
 /data
 /.cache
+/figures
