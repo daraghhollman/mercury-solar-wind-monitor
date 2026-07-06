@@ -11,7 +11,8 @@ from hermpy.net import ClientSPICE
 from sunpy.coordinates.frames import HeliographicStonyhurst
 from sunpy.time import TimeRange
 
-from mvswm.data import MAG_LOADERS, get_solar_cycle_phase
+from mvswm.data.mag import MAG_LOADERS
+from mvswm.data.solar_cycle import get_solar_cycle_phase
 
 
 @dataclass

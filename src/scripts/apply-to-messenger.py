@@ -8,10 +8,10 @@ import polars as pl
 import tensorflow as tf
 from gpflow.kernels import RationalQuadratic
 from matplotlib.axes import Axes
-from matplotlib.lines import Line2D
 from numpy.typing import NDArray
 from scipy.stats import gaussian_kde, pearsonr
-from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+from sklearn.metrics import (mean_absolute_error, r2_score,
+                             root_mean_squared_error)
 from sunpy.time import TimeRange
 
 from mvswm.data import Spacecraft, filter_messenger_mag
@@ -24,8 +24,10 @@ COMPONENT_COLOURS = [BLACK, RED, GREEN, BLUE]
 
 def main() -> None:
 
+    time_range = TimeRange("2011-03-23", dt.timedelta(hours=120))
+
     data = get_messenger_solar_wind_data(
-        TimeRange("2011-03-23", dt.timedelta(hours=120)),
+        time_range,
         bow_shock_buffer=dt.timedelta(minutes=10),
     )
 
@@ -41,6 +43,7 @@ def main() -> None:
     # 1k and 10k.
     split_length: int = 1000
     n_splits: int = round(len(data) / split_length)
+    n_gaps: int = 0
     for split_index in range(n_splits):
 
         split_data = data.slice(split_index * split_length, split_length)
@@ -134,6 +137,7 @@ def main() -> None:
                 {
                     "UTC": evalutation_times,
                     f"{component}": evaluation_prediction_mean.numpy().reshape(-1),
+                    f"{component} Var": evaluation_prediction_var.numpy().reshape(-1),
                 }
             )
 
@@ -261,10 +265,16 @@ def main() -> None:
         plt.show()
         """
 
+        n_gaps += 1
+
     fig, ax = plt.subplots(figsize=(6.5, 4), subplot_kw={"projection": "polar"})
 
     r = PerformanceReport(truths, predictions, baselines)
     r.make_taylor_diagram(ax)
+
+    gaps_title = r"$N_{\rm gaps} =$" + f" {n_gaps}"
+    time_title = f"\nfrom {time_range.start} to {time_range.end}"
+    ax.set_title(gaps_title + time_title)
 
     fig.subplots_adjust(bottom=0.05, top=1, left=0.01, right=1)
     fig.savefig("./figures/taylor.pdf", format="pdf", bbox_inches="tight")
@@ -298,7 +308,7 @@ class PerformanceReport:
             self.truths, self.predictions, self.baselines
         ):
             for component, colour in zip(COMPONENTS, COMPONENT_COLOURS):
-                prediction_std = prediction[component].std() / truth[component].std()
+                prediction_std = np.sqrt(prediction[component + " Var"].mean()) / truth[component].std()
                 baseline_std = baseline[component].std() / truth[component].std()
                 prediction_corr = pearsonr(
                     truth[component], prediction[component]
@@ -330,7 +340,8 @@ class PerformanceReport:
             thetamax=90,  # Stop after an angle of 90
             xticks=theta_positions,
             xticklabels=correlation_ticks,
-            yticks=np.arange(0, 1.2 + 0.2, 0.2),
+            # yticks=np.arange(0, 1.2 + 0.2, 0.2),
+            # yscale="log",
             axisbelow=True,
         )
         ax.text(0.6, 0.02, "$\sigma / \sigma_d$", transform=ax.transAxes)
@@ -367,7 +378,7 @@ class PerformanceReport:
         # Position: to the right of the main axes, in axes-fraction coordinates.
         # Adjust the [x0, y0, width, height] values to taste.
         legend_ax = ax.inset_axes(
-            (-0.1, 0.2, 0.2, 0.05 * n_rows + 0.08), transform=ax.transAxes
+            (-0.15, 0.2, 0.3, 0.05 * n_rows + 0.08), transform=ax.transAxes
         )
         legend_ax.set_xlim(0, 3)
         legend_ax.set_ylim(0, n_rows + 1)
