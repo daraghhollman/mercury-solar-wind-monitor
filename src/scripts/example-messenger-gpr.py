@@ -30,7 +30,7 @@ from mvswm.utils.colours import *
 
 TIME_RANGE = TimeRange("2011-03-28 06:00", "2011-03-29 09:00")
 
-GAP_LENGTH = dt.timedelta(hours=3)
+GAP_LENGTH = dt.timedelta(hours=5)
 
 COMPONENTS = ["|B| [nT]", "Br [nT]", "Bt [nT]", "Bn [nT]"]
 
@@ -435,8 +435,8 @@ def get_linear_interpolation(
 def add_random_gaps(
     data: pl.DataFrame,
     n_gaps: int,
-    min_gap_duration: dt.timedelta = dt.timedelta(hours=3),
-    max_gap_duration: dt.timedelta = dt.timedelta(hours=3),
+    min_gap_duration: dt.timedelta = GAP_LENGTH,
+    max_gap_duration: dt.timedelta = GAP_LENGTH,
     seed: int | None = None,
 ) -> Tuple[pl.DataFrame, List[pl.DataFrame]]:
     """
