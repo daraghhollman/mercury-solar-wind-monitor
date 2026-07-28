@@ -138,6 +138,8 @@ def main() -> None:
 
         ax.set_ylabel(f"$r_p$( {c} )")
 
+        ax.axhline(0, color="lightgrey", ls="dashed", lw=0.1)
+
         if ax == axes[0]:
             ax.legend(ncols=2)
 
