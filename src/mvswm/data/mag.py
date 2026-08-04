@@ -17,8 +17,7 @@ CACHE_DIR = Path(".cache")
 MAG_LOADERS: Dict[str, Callable] = {
     "MESSENGER": partial(
         get_messenger_data,
-        # time_range=TimeRange("2011-03-23", "2015-04-30"),
-        time_range=TimeRange("2011-03-23", "2011-04-30"),
+        time_range=TimeRange("2011-03-23", "2015-04-30"),
         product="MAG",
     ),
     "Solar Orbiter": partial(
