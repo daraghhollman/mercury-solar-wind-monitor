@@ -13,3 +13,6 @@ logs/
 /data
 /.cache
 /figures
+/src/scripts/viewers/.cruise-index.cache
+/src/scripts/viewers/.cruise-sw-fig.pdf
+/src/scripts/viewers/.icme.cache
