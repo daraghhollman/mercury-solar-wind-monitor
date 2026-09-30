@@ -7,17 +7,21 @@ from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
+from gpflow.kernels import RationalQuadratic
+from gpflow.models import GPR
 from matplotlib.axes import Axes
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from numpy.typing import NDArray
 from scipy.stats import linregress
 
-from mvswm.utils.colours import ORANGE, RED
+from mvswm.utils.colours import GREEN, ORANGE, RED
+
+ADD_GPR = False
 
 
 def main() -> None:
 
-    tests: List[str] = ["linear", "sin"]
+    tests: List[str] = ["linear", "discontinuity", "sin", "noisy sin"]
 
     fig, axes = plt.subplots(
         len(tests), 3, width_ratios=[4, 2, 1], figsize=(10, 2 * len(tests))
@@ -29,7 +33,7 @@ def main() -> None:
         x_data = np.arange(len(y_data_original))
 
         # Add gap based on indices
-        gap_indices = (20, 80)
+        gap_indices = (40, 60)
         gap_width = gap_indices[1] - gap_indices[0]
 
         x_test = range(*gap_indices)
@@ -43,6 +47,23 @@ def main() -> None:
         # Linearly interpolate accross the gap. We mask the nans to ignore the gap
         mask = ~np.isnan(y_data)
         y_li = np.interp(x_test, x_data[mask], y_data[mask])
+
+        # Add GPR predictions
+        if ADD_GPR:
+            model = GPR(
+                (
+                    x_data[mask].astype(np.float64).reshape(-1, 1),
+                    y_data[mask].astype(np.float64).reshape(-1, 1),
+                ),
+                kernel=RationalQuadratic(),
+                noise_variance=1e-4,
+            )
+            y_gpr, y_gpr_var = model.predict_y(
+                np.array(x_test).astype(np.float64).reshape(-1, 1)
+            )
+
+            y_gpr = y_gpr.numpy().flatten()
+            y_gpr_var = y_gpr_var.numpy().flatten()
 
         # Plotting
 
@@ -63,7 +84,18 @@ def main() -> None:
 
         ax.scatter(x_test, y_li, color=ORANGE, marker=".", label="LI")
 
-        ax.legend()
+        if ADD_GPR:
+            ax.errorbar(
+                x_test,
+                y_gpr,
+                fmt=".",
+                yerr=np.sqrt(y_gpr_var),
+                color=GREEN,
+                label="GPR",
+            )
+
+        if i == 0:
+            ax.legend()
 
         ax.set_xlabel("x [arb.]")
         ax.set_ylabel("y [arb.]")
@@ -171,8 +203,19 @@ def get_data(which: str) -> NDArray[np.float64]:
         case "linear":
             return data_range
 
+        case "discontinuity":
+            discontinuity = data_range
+            discontinuity[:len(data_range) // 2] -= 1
+
+            return discontinuity
+
         case "sin":
             return np.sin(data_range * 15)
+
+        case "noisy sin":
+            return np.sin(data_range * 15) + np.random.normal(
+                scale=0.3, size=len(data_range)
+            )
 
         case _:
             raise ValueError(f"No matching data function for `which`=={which}")
