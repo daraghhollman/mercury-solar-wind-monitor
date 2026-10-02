@@ -93,6 +93,7 @@ class Spacecraft:
             )
 
             # Join the positions to the MAG data by nearest neighbour
+            print(" Merging positions with data")
             positions_table = positions_table.with_columns(
                 pl.col("UTC").cast(data.schema["UTC"])
             ).sort("UTC")
