@@ -9,9 +9,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 from matplotlib.colors import LogNorm, SymLogNorm
+from matplotlib.gridspec import GridSpec
 from sunpy.time import TimeRange
 
 from mvswm.data import Spacecraft, filter_messenger_mag
+from mvswm.data.solar_cycle import get_sunspot_numbers
 from mvswm.utils.colours import BLACK, BLUE, RED
 
 # TODO: needs refining
@@ -58,7 +60,9 @@ def main() -> None:
 
     set_names = ["Evaluation", "Testing", "Application"]
 
-    data_to_split = data.filter(pl.col("UTC") <= MESSENGER_ORBIT_START - MISSION_START_BUFFER)
+    data_to_split = data.filter(
+        pl.col("UTC") <= MESSENGER_ORBIT_START - MISSION_START_BUFFER
+    )
     application_data = data.filter(pl.col("UTC") > MESSENGER_ORBIT_START)
 
     # Clean data by removing MESSENGER magnetosphere times
@@ -67,24 +71,49 @@ def main() -> None:
     )
 
     # Split description
-    # split_date = dt.datetime(2010, 1, 1)
-    # evaluation_data, testing_data = split_trivially(data_to_split, split_date)
-    # split_description = f"Splitting Evaluation and Testing on date: {split_date}"
+    split_date = dt.datetime(2010, 1, 1)
+    evaluation_data, testing_data = split_trivially(data_to_split, split_date)
+    split_description = f"Splitting Evaluation and Testing on date: {split_date}"
 
-    chunk_length = dt.timedelta(days=27)
-    evaluation_data, testing_data = split_sequentially(
-        data_to_split, chunk_length=chunk_length
-    )
-    split_description = (
-        f"Splitting Evaluation and Testing sequentially in chunks of {chunk_length}"
-    )
+    # chunk_length = dt.timedelta(days=88)
+    # evaluation_data, testing_data = split_sequentially(
+    #     data_to_split, chunk_length=chunk_length
+    # )
+    # split_description = (
+    #     f"Splitting Evaluation and Testing sequentially in chunks of {chunk_length}"
+    # )
     # stats = chunk_length_stats(data_to_split, chunk_length)
     # print(stats)
 
     # Plotting
     # Two columns of axes, one for the data, another to compare with the
     # average of all 3 rows. Each row is a different dataset
-    fig, axes = plt.subplots(3, 2, sharex=True, sharey=True)
+    fig = plt.figure(layout="constrained")
+    gs = GridSpec(5, 2, figure=fig)
+
+    # 1D Timeseries for context
+    sun_distance_ax = fig.add_subplot(gs[0, :])
+    sunspot_number_ax = fig.add_subplot(gs[1, :], sharex=sun_distance_ax)
+
+    # 2D Histograms comparing datasets
+    evaluation_ax = fig.add_subplot(gs[2, 0])
+    testing_ax = fig.add_subplot(gs[3, 0], sharex=evaluation_ax, sharey=evaluation_ax)
+    application_ax = fig.add_subplot(
+        gs[4, 0], sharex=evaluation_ax, sharey=evaluation_ax
+    )
+
+    # Steal the unused evaluation delta axis for flattened distributions
+    flat_distributions_ax = fig.add_subplot(gs[2, 1], sharey=evaluation_ax)
+
+    testing_delta_ax = fig.add_subplot(
+        gs[3, 1], sharex=evaluation_ax, sharey=evaluation_ax
+    )
+    application_delta_ax = fig.add_subplot(
+        gs[4, 1], sharex=evaluation_ax, sharey=evaluation_ax
+    )
+
+    data_axes = [evaluation_ax, testing_ax, application_ax]
+    data_delta_axes = [flat_distributions_ax, testing_delta_ax, application_delta_ax]
 
     datasets = [evaluation_data, testing_data, application_data]
     histograms = [
@@ -96,9 +125,7 @@ def main() -> None:
     data_norm = LogNorm(vmin=0.01, vmax=np.max(np.array(histograms)))
 
     # Data axes
-    for i, hist in enumerate(histograms):
-
-        ax = axes[i, 0]
+    for i, (hist, ax) in enumerate(zip(histograms, data_axes)):
 
         data_mesh = ax.pcolormesh(
             X_EDGES,
@@ -132,9 +159,10 @@ def main() -> None:
     largest_diff = np.nanmax(np.abs(np.array(diffs)))
     diff_norm = SymLogNorm(0.1, vmin=-largest_diff, vmax=largest_diff)
 
-    for i, hist in enumerate(diffs):
+    for i, (hist, ax) in enumerate(zip(diffs, data_delta_axes)):
 
-        ax = axes[i, 1]
+        if i == 0:
+            continue
 
         # Difference from median hist goes here. Separate colour to differentiate 0 form no overlap in data
         diff_mesh = ax.pcolormesh(
@@ -148,60 +176,141 @@ def main() -> None:
         if i == 2:
             ax.set_xlabel("$R_H$ [au]")
 
-    for column_index in range(len(axes[:, 0])):
-        _data_cadence = (
-            datasets[column_index]["UTC"][2] - datasets[column_index]["UTC"][1]
-        )
+    for row_index, ax in enumerate(data_axes):
+        _data_cadence = datasets[row_index]["UTC"][2] - datasets[row_index]["UTC"][1]
 
-        axes[column_index, 0].set(
-            ylabel=set_names[column_index]
+        ax.set(
+            ylabel=set_names[row_index]
             + "\n|B| [nT]\n"
-            + f"N = {len(datasets[column_index].drop_nulls())}\n"
-            + f"{_data_cadence * len(datasets[column_index])}",
+            + f"N = {len(datasets[row_index].drop_nulls())}\n"
+            + f"{_data_cadence * len(datasets[row_index])}",
         )
 
-    panel_labels = "abcdef"
-    for ax, c in zip(axes.T.flatten(), panel_labels):
-        ax.text(0.02, 0.95, f"({c})", ha="left", va="top", transform=ax.transAxes)
+    # evaluation_delta_ax.text(
+    #     0.5,
+    #     0.5,
+    #     "N/A",
+    #     ha="center",
+    #     va="center",
+    #     transform=evaluation_delta_ax.transAxes,
+    # )
+    testing_delta_ax.text(
+        0.5,
+        0.95,
+        f"Panel (d) - panel (c)",
+        ha="center",
+        va="top",
+        transform=testing_delta_ax.transAxes,
+    )
+    application_delta_ax.text(
+        0.5,
+        0.95,
+        f"Panel (e) - panel (d)",
+        ha="center",
+        va="top",
+        transform=application_delta_ax.transAxes,
+    )
 
-    axes[0, 1].text(
-        0.5, 0.5, "N/A", ha="center", va="center", transform=axes[0, 1].transAxes
-    )
-    axes[1, 1].text(
-        0.5, 0.95, f"Panel (b) - panel (a)", ha="center", va="top", transform=axes[1, 1].transAxes
-    )
-    axes[2, 1].text(
-        0.5, 0.95, f"Panel (c) - panel (b)", ha="center", va="top", transform=axes[2, 1].transAxes
-    )
-
-    fig.colorbar(data_mesh, ax=axes[:, 0], label="Normalised Observations [arb.]")
-    fig.colorbar(diff_mesh, ax=axes[:, 1], label="Difference [arb.]")
+    fig.colorbar(data_mesh, ax=data_axes, label="Normalised Observations [arb.]")
+    fig.colorbar(diff_mesh, ax=data_delta_axes[1:], label="Difference [arb.]")
 
     fig.suptitle(split_description)
 
     # Another figure to ignore heliocentric distance and just look at full
     # distribution.
-    fig, ax = plt.subplots()
-
     hist_params = {
-        "bins": Y_EDGES,
+        "bins": Y_EDGES.tolist(),
         "histtype": "step",
         "density": True,
         "lw": 3,
+        "orientation": "horizontal",
     }
 
-    ax.hist(evaluation_data["|B| [nT]"], color=RED, label="Evaluation", **hist_params)
-    ax.hist(testing_data["|B| [nT]"], color=BLUE, label="Testing", **hist_params)
-    ax.hist(
+    flat_distributions_ax.hist(
+        evaluation_data["|B| [nT]"], color=RED, label="Evaluation", **hist_params
+    )
+    flat_distributions_ax.hist(
+        testing_data["|B| [nT]"], color=BLUE, label="Testing", **hist_params
+    )
+    flat_distributions_ax.hist(
         application_data["|B| [nT]"], color=BLACK, label="Application", **hist_params
     )
 
-    ax.legend()
+    flat_distributions_ax.legend()
 
-    ax.set_xlabel("|B| [nT]")
-    ax.set_ylabel("Normalised Occurrence")
+    flat_distributions_ax.set_ylabel("|B| [nT]")
+    flat_distributions_ax.set_xlabel("Normalised Occurrence")
+
+    # Third figure to show time series of heliocentric distance and sunspot number, coloured by data set
+    sunspots = get_sunspot_numbers()
+
+    sunspots = (
+        sunspots.with_columns(
+            _year=pl.col("Decimal Year").floor().cast(pl.Int32),
+        )
+        .with_columns(
+            _frac=pl.col("Decimal Year") - pl.col("_year"),
+            _start=pl.datetime(pl.col("_year"), 1, 1),
+            _end=pl.datetime(pl.col("_year") + 1, 1, 1),
+        )
+        .with_columns(
+            UTC=pl.col("_start")
+            + pl.duration(
+                microseconds=(
+                    (pl.col("_end") - pl.col("_start")).dt.total_microseconds()
+                    * pl.col("_frac")
+                ).cast(pl.Int64)
+            )
+        )
+        .drop("_year", "_frac", "_start", "_end")
+    )
+
+    for data, color in [
+        (evaluation_data, RED),
+        (testing_data, BLUE),
+        (application_data, BLACK),
+    ]:
+        d = with_gaps(data)
+
+        d_sunspot = with_gaps(
+            d.with_columns(pl.col("UTC").cast(pl.Datetime("us"))).join_asof(
+                sunspots.with_columns(pl.col("UTC").cast(pl.Datetime("us"))),
+                on="UTC",
+                strategy="nearest",
+            )
+        )
+
+        sun_distance_ax.plot(
+            d["UTC"].to_numpy(), d["Radius [au]"].to_numpy(), color=color
+        )
+        sunspot_number_ax.plot(
+            d_sunspot["UTC"].to_numpy(), d_sunspot["Mean"].to_numpy(), color=color
+        )
+
+    sun_distance_ax.set_ylabel("$R_H$ [au]")
+    sunspot_number_ax.set_ylabel("Mean Monthly\nSunspot Number")
+
+    # Label axes
+    ax_labels = "abcdefghijk"
+    for ax, label in zip(
+        [sun_distance_ax, sunspot_number_ax, *data_axes, *data_delta_axes], ax_labels
+    ):
+        ax.text(0.01, 0.95, f"({label})", ha="left", va="top", transform=ax.transAxes)
 
     plt.show()
+
+
+def with_gaps(
+    df: pl.DataFrame,
+    time_col: str = "UTC",
+    max_gap: dt.timedelta = dt.timedelta(hours=1),
+) -> pl.DataFrame:
+    """Insert a null row inside any gap larger than max_gap."""
+    df = df.sort(time_col)
+    gap_rows = df.filter(
+        (pl.col(time_col).shift(-1) - pl.col(time_col)) > max_gap
+    ).select((pl.col(time_col) + max_gap / 2).cast(df.schema[time_col]))
+    return pl.concat([df, gap_rows], how="diagonal").sort(time_col)
 
 
 def remove_flybys(data: pl.DataFrame) -> pl.DataFrame:
