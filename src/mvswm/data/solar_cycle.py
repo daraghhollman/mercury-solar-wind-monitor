@@ -19,6 +19,9 @@ def get_solar_cycle_phase(t: Sequence[dt.datetime]) -> List[float]: ...
 def get_solar_cycle_phase(
     t: TimeOrTimes, cache_dir=Path(__file__).parents[3] / "data/cache/"
 ) -> float | List[float]:
+    """
+    0 and 2pi are maxima, pi are minima
+    """
 
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -96,7 +99,7 @@ def get_solar_cycle_phase(
 def get_sunspot_numbers(
     cache_dir: Path = Path(__file__).parents[3] / "data/cache/",
 ) -> pl.DataFrame:
-    """Fetches a timeseries of sunspot number"""
+    """Fetches mean monthly sunspot number"""
 
     # 13 month smoothed total sunspot number
     url = "https://www.sidc.be/SILSO/INFO/snmstotcsv.php"
@@ -129,6 +132,9 @@ def get_sunspot_numbers(
         },
         has_header=False,
         separator=";",
+    ).with_columns(
+        # First day of each month
+        pl.datetime(pl.col("Year"), pl.col("Month"), 1).cast(pl.Datetime("ns")).alias("Month Start")
     )
 
     return data
