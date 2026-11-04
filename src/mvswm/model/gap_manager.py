@@ -1,124 +1,246 @@
 import datetime as dt
-from dataclasses import dataclass
-from typing import List, Literal
+import random
+from typing import Callable
 
 import polars as pl
 
 
-@dataclass
-class DataGap:
-    start: dt.datetime
-    end: dt.datetime
-
-
 class GapManager:
+    """
+    Inserts artificial time-based gaps into a Polars DataFrame.
+
+    Parameters
+    ----------
+    get_gap_size : Callable[[], float]
+        Returns the duration (in minutes) of each gap when called.
+
+    get_gap_interval : Callable[[], float]
+        Returns the duration (in minutes) between the end of one gap and the
+        start of the next when called.
+
+    seed : int, optional
+        Random seed for reproducibility.  Passed to ``random.seed()`` before
+        any gap generation so that repeated calls with the same seed always
+        produce identical masks.
+    """
 
     def __init__(
         self,
-        data: pl.DataFrame,
-        gap_length: dt.timedelta,
-        strategy: Literal["middle"] = "middle",
+        get_gap_size: Callable[[], float],
+        get_gap_interval: Callable[[], float],
+        seed: int = 0,
     ) -> None:
 
-        self._data = data
-        self.strategy = strategy
-        self.gap_length = gap_length
+        self.get_gap_size = get_gap_size
+        self.get_gap_interval = get_gap_interval
+        self.seed = seed
 
-    @staticmethod
-    def _overlaps(a: DataGap, b: DataGap) -> bool:
-        """True if gap `a` and gap `b` overlap at all (inclusive bounds)."""
-        return a.start <= b.end and b.start <= a.end
+    def add_gaps(
+        self,
+        df: pl.DataFrame,
+        time_column: str = "UTC",
+    ) -> pl.DataFrame:
+        """
+        Return a copy of df with rows inside computed gap windows set to
+        ``null``.
 
-    @property
-    def real_gaps(self) -> List[DataGap]:
+        Parameters
+        ----------
+        df : pl.DataFrame
+            Source data.  Must contain a datetime column.
 
-        # Gaps are marked by nan values in the data.
-        nan_rows = self._data.filter(pl.any_horizontal(pl.all().is_null()))
+        time_column : str
+            Name of the UTC timestamp column (default ``"UTC"``). This column
+            must be of type: datetime.datetime.
 
-        # Find time differences
-        nan_rows = nan_rows.with_columns(
-            (pl.col("UTC") - pl.col("UTC").shift()).alias("Time Difference")
+        Returns
+        -------
+        pl.DataFrame
+            DataFrame with the same schema; rows inside gaps have ``null``
+            values for every column except *time_column*.
+        """
+
+        if df.is_empty():
+            raise ValueError("Cannot generate gaps in an empty dataset.")
+
+        # Set seed to ensure reproducibility
+        random.seed(self.seed)
+
+        gap_mask = self._build_gap_mask(df[time_column])
+
+        null_series = pl.Series("__gap__", gap_mask)
+        data_columns = [c for c in df.columns if c != time_column]
+
+        return df.with_columns(
+            [
+                pl.when(null_series).then(pl.lit(None)).otherwise(pl.col(c)).alias(c)
+                for c in data_columns
+            ]
         )
 
-        splits: List[pl.DataFrame] = nan_rows.with_columns(
-            (pl.col("Time Difference") > pl.col("Time Difference").median())
-            .cum_sum()
-            .alias("Gap Id")
-        ).partition_by("Gap Id", maintain_order=True)
-
-        # Due to the nature of this shift time-difference, the first row
-        # doesn't have a Gap Id, and needs to be merged.
-        splits = [pl.merge_sorted(splits[:2], "UTC")] + splits[2:]
-
-        # Data gaps are just the start and end times of these splits
-        gaps: List[DataGap] = []
-        for split in splits:
-
-            gaps.append(DataGap(split["UTC"][0], split["UTC"][-1]))
-
-        return gaps
-
-    @property
-    def artificial_gaps(self) -> List[DataGap]:
-
-        # Method of placing gaps is managed by the `strategy` parameter.
-        match self.strategy:
-
-            # Place the artificial gaps in the middle of real gaps.
-            case "middle":
-
-                real_gaps = self.real_gaps
-
-                middle_times: List[dt.datetime] = [
-                    real_gaps[i].end + (real_gaps[i + 1].start - real_gaps[i].end) / 2
-                    for i in range(len(self.real_gaps) - 1)
-                ]
-
-                gaps: List[DataGap] = []
-                for t in middle_times:
-                    gaps.append(
-                        DataGap(t - self.gap_length / 2, t + self.gap_length / 2)
-                    )
-
-            case _:
-                raise ValueError(
-                    f"Unknown GapManager placement strategy: '{self.strategy}'"
-                )
-
-        # Remove any artificial gaps that overlap with a real gap.
-        real_gaps = self.real_gaps
-        gaps = [
-            gap
-            for gap in gaps
-            if not any(self._overlaps(gap, real_gap) for real_gap in real_gaps)
-        ]
-
-        return gaps
-
-    @property
-    def training_data(self) -> pl.DataFrame | None:
+    def split_data(
+        self,
+        df: pl.DataFrame,
+        time_column: str = "UTC",
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
         """
-        Training data consists of the input dataset, minus the artificial gaps.
+        Simultaniously get the data around the gaps, and the data within the
+        gaps.
+
+        Parameters
+        ----------
+        df : pl.DataFrame
+            Source data.
+
+        time_column : str
+            Name of the UTC timestamp column (default ``"UTC"``).
+
+        Returns
+        -------
+        tuple[pl.DataFrame, pl.DataFrame]
+            ``(data_surrounding_gaps, data_within_gaps)``
         """
 
-        data = self._data
+        if df.is_empty():
+            raise ValueError("Cannot generate gaps in an empty dataset.")
 
-        subsets: List[pl.DataFrame] = []
-        for gap in self.artificial_gaps:
-            subsets.append(data.filter(~pl.col("UTC").is_between(gap.start, gap.end)))
+        random.seed(self.seed)
+        gap_mask = self._build_gap_mask(df[time_column])
 
-        return pl.concat(subsets) if len(subsets) != 0 else None
+        gap_series = pl.Series("__gap__", gap_mask)
+        value_cols = [c for c in df.columns if c != time_column]
 
-    @property
-    def evaluation_data(self) -> pl.DataFrame | None:
+        # Rows inside gaps -> null
+        train_df = df.with_columns(
+            [
+                pl.when(~gap_series).then(pl.col(c)).otherwise(None).alias(c)
+                for c in value_cols
+            ]
+        )
+
+        # Rows outside gaps -> null
+        test_df = df.with_columns(
+            [
+                pl.when(gap_series).then(pl.col(c)).otherwise(None).alias(c)
+                for c in value_cols
+            ]
+        )
+
+        return train_df, test_df
+
+    def _build_gap_mask(self, times: pl.Series) -> list[bool]:
         """
-        Evaluation data consists of the artificial gaps from the input data.
+        Compute a boolean list aligned with *times* where ``True`` marks rows
+        that fall inside a gap window.
+
+        Callers are responsible for seeding ``random`` before calling this
+        method so that public-method reproducibility guarantees are upheld.
+
+        Parameters
+        ----------
+        times : pl.Series
+            The datetime series to walk over.
+
+        Returns
+        -------
+        list[bool]
+            ``True`` for each row that falls in ``[gap_start, gap_end)``.
+        """
+        t_min = times.min()
+        t_max = times.max()
+
+        assert isinstance(t_min, dt.datetime)
+        assert isinstance(t_max, dt.datetime)
+
+        gap_mask: list[bool] = [False] * len(times)
+        current_time: dt.datetime = t_min
+
+        while current_time < t_max:
+            current_time += dt.timedelta(minutes=self.get_gap_interval())
+
+            if current_time >= t_max:
+                break
+
+            gap_start: dt.datetime = current_time
+            gap_end: dt.datetime = gap_start + dt.timedelta(minutes=self.get_gap_size())
+
+            in_gap = (times >= gap_start) & (times < gap_end)
+            for i, flag in enumerate(in_gap.to_list()):
+                if flag:
+                    gap_mask[i] = True
+
+            current_time = gap_end
+
+        return gap_mask
+
+    @classmethod
+    def from_constants(
+        cls,
+        gap_size_minutes: float,
+        gap_interval_minutes: float,
+    ) -> "GapManager":
+        """
+        Create a GapGenerator that uses fixed (constant) gap sizes and
+        intervals.
+
+        Parameters
+        ----------
+        gap_size_minutes : float
+            Every gap will be exactly this many minutes long.
+
+        gap_interval_minutes : float
+            The spacing between gaps will always be exactly this many minutes.
+        """
+        return cls(
+            get_gap_size=lambda: gap_size_minutes,
+            get_gap_interval=lambda: gap_interval_minutes,
+        )
+
+    @classmethod
+    def from_gaussian(
+        cls,
+        gap_size_mean: float,
+        gap_size_std: float,
+        gap_interval_mean: float,
+        gap_interval_std: float,
+        seed: int = 0,
+        min_minutes: float = 1.0,
+    ) -> "GapManager":
+        """
+        Create a GapGenerator whose gap sizes and intervals are drawn from
+        independent normal distributions.
+
+        Parameters
+        ----------
+        gap_size_mean : float
+            Mean of the gap-size distribution (minutes).
+
+        gap_size_std : float
+            Standard deviation of the gap-size distribution (minutes).
+
+        gap_interval_mean : float
+            Mean of the inter-gap interval distribution (minutes).
+
+        gap_interval_std : float
+            Standard deviation of the inter-gap interval distribution (minutes).
+
+        seed : int
+            Random seed passed to ``random.seed()`` at the start of each
+            ``generate_gaps`` call.
+
+        min_minutes : float
+            Floor value applied to both drawns to avoid zero or negative
+            durations (default 1.0 minute).
         """
 
-        data = self._data
+        def _get_gap_size() -> float:
+            return max(min_minutes, random.gauss(gap_size_mean, gap_size_std))
 
-        subsets: List[pl.DataFrame] = []
-        for gap in self.artificial_gaps:
-            subsets.append(data.filter(pl.col("UTC").is_between(gap.start, gap.end)))
+        def _get_gap_interval() -> float:
+            return max(min_minutes, random.gauss(gap_interval_mean, gap_interval_std))
 
-        return pl.concat(subsets) if len(subsets) != 0 else None
+        return cls(
+            get_gap_size=_get_gap_size,
+            get_gap_interval=_get_gap_interval,
+            seed=seed,
+        )

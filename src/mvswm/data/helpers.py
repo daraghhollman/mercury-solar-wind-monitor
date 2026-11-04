@@ -106,3 +106,16 @@ def get_messenger_solar_wind_data(
     data = filter_messenger_mag(data, buffer=bow_shock_buffer)
 
     return data
+
+
+def make_gaps_null(
+    df: pl.DataFrame,
+    time_col: str = "UTC",
+    max_gap: dt.timedelta = dt.timedelta(hours=1),
+) -> pl.DataFrame:
+    """Insert a null row inside any gap larger than max_gap."""
+    df = df.sort(time_col)
+    gap_rows = df.filter(
+        (pl.col(time_col).shift(-1) - pl.col(time_col)) > max_gap
+    ).select((pl.col(time_col) + max_gap / 2).cast(df.schema[time_col]))
+    return pl.concat([df, gap_rows], how="diagonal").sort(time_col)

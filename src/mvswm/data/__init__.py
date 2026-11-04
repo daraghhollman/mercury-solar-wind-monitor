@@ -6,7 +6,7 @@ from .downloaders import (
     get_parker_data,
     get_solar_orbiter_data,
 )
-from .helpers import filter_messenger_mag, get_messenger_solar_wind_data
+from .helpers import filter_messenger_mag, get_messenger_solar_wind_data, make_gaps_null
 from .icme import get_icmes
 from .mag import MAG_LOADERS
 from .solar_cycle import get_solar_cycle_phase
@@ -25,4 +25,5 @@ __all__ = [
     "get_parker_data",
     "get_solar_orbiter_data",
     "get_messenger_solar_wind_data",
+    "make_gaps_null",
 ]
