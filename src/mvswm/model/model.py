@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Tuple
 
 import gpflow
 import numpy as np
 from gpflow.kernels import Kernel
-from gpflow.models import GPR
+from gpflow.models import GPR, SGPR
 from gpflow.optimizers import Scipy
 from keras.optimizers import Optimizer
 from numpy.typing import NDArray
-from typing import Any, Tuple
 
 from mvswm.model.scalling import TimeScaler
 
@@ -21,7 +21,7 @@ __all__ = [
 # Define a class to hold the model and associated functions
 @dataclass
 class SolarWindModel:
-    model: GPR
+    model: GPR | SGPR
     data: Tuple[NDArray[np.datetime64], NDArray[Any]]
     kernel: Kernel
     optimiser: Optimizer
@@ -35,6 +35,7 @@ class SolarWindModel:
         output: NDArray[Any],
         time_scaler: TimeScaler,
         kernel: Kernel,
+        n_inducing_points: int,
         seed: int = 0,
     ) -> SolarWindModel:
         """
@@ -51,10 +52,14 @@ class SolarWindModel:
         X = time_scaler.time_to_numeric(input)
         Y = output
 
-        gpmodel = GPR(
+        rng = np.random.default_rng(seed)
+        inducing_points = rng.choice(X, size=n_inducing_points, replace=False)
+
+        gpmodel = SGPR(
             (X, Y),
             kernel=kernel,
             mean_function=gpflow.mean_functions.Constant(np.mean(output)),
+            inducing_variable=inducing_points,
         )
 
         opt = Scipy()
