@@ -70,12 +70,13 @@ def main() -> None:
         model.train_model()
 
         # Get mean and variance for full range.
-        t_start = np.datetime64(X[0])
-        t_end = np.datetime64(X[-1])
+        chunk_times = X[this_chunk, 0]  # 1D array, shape (n,)
 
-        t_range = np.arange(
-            t_start, t_end + np.timedelta64(PREDICTION_CADENCE), np.timedelta64(PREDICTION_CADENCE)
-        )
+        cadence = np.timedelta64(PREDICTION_CADENCE)
+        t_start = chunk_times[0]
+        t_end = chunk_times[-1]
+
+        t_range = np.arange(t_start, t_end + cadence, cadence)
 
         x_range = model.time_scaler.time_to_numeric(t_range[:, None])
 
