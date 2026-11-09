@@ -2,9 +2,10 @@
 Take a selection of data from the evalutation data set, and test applying a model.
 """
 
-from mvswm.utils.colours import RED
+from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
 import datetime as dt
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from numpy.typing import NDArray
 from tqdm import tqdm
 
 from mvswm.model import GapManager, SolarWindModel, TimeScaler
-from mvswm.utils.colours import GREEN
+from mvswm.utils.colours import BLACK, BLUE, GREEN, RED
 
 SAVE_DIR = Path(__file__).parents[2] / "data/"
 
@@ -28,6 +29,15 @@ CHUNK_LENGTH = round(dt.timedelta(days=0.5).total_seconds() / 60)
 MAX_CHUNK_POINTS = 100  # Arbitrarilly defined, used to tweak memory limitations.
 
 PREDICTION_CADENCE = dt.timedelta(minutes=1)
+
+Y_VARS = ["|B| [nT]", "Br [nT]", "Bt [nT]", "Bn [nT]"]
+
+Y_COLOURS = {
+    "|B| [nT]": BLACK,
+    "Br [nT]": RED,
+    "Bt [nT]": GREEN,
+    "Bn [nT]": BLUE,
+}
 
 
 def main() -> None:
@@ -48,18 +58,33 @@ def main() -> None:
     training_data, testing_data = gap_manager.split_data(data)
 
     X_train: NDArray = training_data.drop_nulls()["UTC"].to_numpy().reshape(-1, 1)
-    Y_train: NDArray = training_data.drop_nulls()["|B| [nT]"].to_numpy().reshape(-1, 1)
+    Y_train: dict[str, NDArray] = {
+        y_var: training_data.drop_nulls()[y_var].to_numpy().reshape(-1, 1)
+        for y_var in Y_VARS
+    }
 
     X_test: NDArray = testing_data.drop_nulls()["UTC"].to_numpy().reshape(-1, 1)
-    Y_test: NDArray = testing_data.drop_nulls()["|B| [nT]"].to_numpy().reshape(-1, 1)
+    Y_test: dict[str, NDArray] = {
+        y_var: testing_data.drop_nulls()[y_var].to_numpy().reshape(-1, 1)
+        for y_var in Y_VARS
+    }
 
     chunk_slices = get_chunk_slices(len(X_train), CHUNK_LENGTH)
-
     chunk_predictions: list[ModelOutput] = []
-    for i, this_chunk in tqdm(enumerate(chunk_slices), desc="Processing data chunk"):
+
+    # We can use product to flatten a for looop in chunks and a second in MAG
+    # component into a single loop. This gives more frequent updates to tqdm.
+    runs = list(product(enumerate(chunk_slices), Y_VARS))
+    for (i, this_chunk), y_var in tqdm(
+        runs,
+        desc="Fitting models",
+        unit="model",
+    ):
+        if i == 3:
+            break
 
         X_train_chunk = X_train[this_chunk]
-        Y_train_chunk = Y_train[this_chunk]
+        Y_train_chunk = Y_train[y_var][this_chunk]
 
         # Time bounds of this chunk, defined by the training data
         chunk_times = X_train_chunk[:, 0]
@@ -69,7 +94,7 @@ def main() -> None:
         # Only keep test points that fall inside the chunk's time window
         test_mask = (X_test[:, 0] >= t_start) & (X_test[:, 0] <= t_end)
         X_test_chunk = X_test[test_mask]
-        Y_test_chunk = Y_test[test_mask]
+        Y_test_chunk = Y_test[y_var][test_mask]
 
         print("")
         print(f"Chunk size: {len(X_train_chunk)}")
@@ -97,7 +122,7 @@ def main() -> None:
 
         x_range = model.time_scaler.time_to_numeric(t_range[:, None])
 
-        y_mean, y_var = model.model.predict_y(x_range)
+        y_mean, y_variance = model.model.predict_y(x_range)
 
         inputs_dict = {
             "X Train": X_train_chunk.ravel(),
@@ -108,17 +133,14 @@ def main() -> None:
 
         outputs_dict = {
             "UTC": t_range,
-            "|B| [nT]": y_mean.numpy().ravel(),
-            "Var(|B|)": y_var.numpy().ravel(),
+            f"{y_var}": y_mean.numpy().ravel(),
+            f"Var({y_var})": y_variance.numpy().ravel(),
         }
 
         results = ModelOutput(outputs_dict, inputs_dict, model)
         chunk_predictions.append(results)
 
         # single_chunk_plot(results)
-
-        if i == 1:
-            break
 
     combined_chunk_plot(chunk_predictions)
     plt.show()
@@ -148,32 +170,63 @@ def single_chunk_plot(chunk_results: ModelOutput, ax: Axes | None = None) -> Non
     inputs = chunk_results.inputs
     outputs = chunk_results.outputs
 
-    ax.scatter(
-        inputs["X Train"], inputs["Y Train"], marker=".", color="black", zorder=5
-    )
-    ax.scatter(
-        inputs["X Test"],
-        inputs["Y Test"],
-        marker=".",
-        color=RED,
-        alpha=0.5,
-        zorder=4,
-    )
+    # We don't know which variable is part of this individual model output, so
+    # we try them all.
+    for i, y in enumerate(Y_VARS):
+        try:
+            ax.plot(outputs["UTC"], outputs[y], color=Y_COLOURS[y], label=y[:-4], zorder=5-i)
 
-    ax.plot(outputs["UTC"], outputs["|B| [nT]"], color=GREEN)
+            upper = outputs[y] + 1.95 * np.sqrt(outputs[f"Var({y})"])
+            lower = outputs[y] - 1.95 * np.sqrt(outputs[f"Var({y})"])
 
-    upper = outputs["|B| [nT]"] + 1.95 * np.sqrt(outputs["Var(|B|)"])
-    lower = outputs["|B| [nT]"] - 1.95 * np.sqrt(outputs["Var(|B|)"])
+            ax.fill_between(outputs["UTC"], lower, upper, color=Y_COLOURS[y], alpha=0.3, zorder=6-i)
 
-    ax.fill_between(outputs["UTC"], lower, upper, color=GREEN, alpha=0.3)
+            ax.scatter(
+                inputs["X Train"],
+                inputs["Y Train"],
+                marker=".",
+                color=Y_COLOURS[y],
+                zorder=5-i,
+            )
+            ax.scatter(
+                inputs["X Test"],
+                inputs["Y Test"],
+                marker=".",
+                color=Y_COLOURS[y],
+                alpha=0.2,
+                zorder=5-i,
+            )
+
+        except KeyError:
+            continue
 
 
 def combined_chunk_plot(multiple_chunk_results: list[ModelOutput]) -> None:
+    """
+    Input is a list of ModelOutput where every 4 models correspond to the same
+    period of time, but for |B|, Br, Bt, Bn individually.
+    """
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(layout='constrained')
 
     for results in multiple_chunk_results:
         single_chunk_plot(results, ax)
+
+    ax.set_ylabel("[nT]")
+
+    locator = AutoDateLocator(minticks=3, maxticks=7)
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(ConciseDateFormatter(locator))
+
+    # Remove duplicate legend entries
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(
+        by_label.values(),
+        by_label.keys(),
+        loc="lower right",
+        ncol=4,
+    )
 
 
 if __name__ == "__main__":
