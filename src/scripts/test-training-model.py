@@ -14,6 +14,7 @@ import polars as pl
 from gpflow.kernels import RationalQuadratic
 from matplotlib.axes import Axes
 from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
+from matplotlib.figure import Figure
 from numpy.typing import NDArray
 from tqdm import tqdm
 
@@ -21,12 +22,13 @@ from mvswm.model import GapManager, SolarWindModel, TimeScaler
 from mvswm.utils.colours import BLACK, BLUE, GREEN, RED
 
 SAVE_DIR = Path(__file__).parents[2] / "data/"
+LOG_DIR = Path(__file__).parents[2] / "logs/"
 
 # We need chunks longer than the synodic solar rotation if we want to capture
 # any periodicities. Converted to minutes, the data cadence
 # CHUNK_LENGTH = round(dt.timedelta(days=1.5 * 30).total_seconds() / 60)
 CHUNK_LENGTH = round(dt.timedelta(days=0.5).total_seconds() / 60)
-MAX_CHUNK_POINTS = 300  # Arbitrarilly defined, used to tweak memory limitations.
+MAX_CHUNK_POINTS = 100  # Arbitrarilly defined, used to tweak memory limitations.
 
 PREDICTION_CADENCE = dt.timedelta(minutes=1)
 
@@ -41,6 +43,10 @@ Y_COLOURS = {
 
 
 def main() -> None:
+
+    # Create log directory
+    run_log_dir = LOG_DIR / dt.datetime.now().strftime("%Y-%m-%d--%H-%M")
+    run_log_dir.mkdir(exist_ok=True, parents=True)
 
     # Load data
     data = pl.read_csv(SAVE_DIR / "evaluation-data.csv", try_parse_dates=True)
@@ -83,13 +89,14 @@ def main() -> None:
 
     # We can use product to flatten a for looop in chunks and a second in MAG
     # component into a single loop. This gives more frequent updates to tqdm.
+    component_counter = 0
     runs = list(product(enumerate(chunk_slices), Y_VARS))
     for (i, this_chunk), y_var in tqdm(
         runs,
         desc="Fitting models",
         unit="model",
     ):
-        if i == 3:
+        if i == 2:
             break
 
         X_train_chunk = X_train[this_chunk]
@@ -166,16 +173,30 @@ def main() -> None:
         }
 
         results = ModelOutput(outputs_dict, inputs_dict, model)
+
+        fig_output = run_log_dir / "runtime-figs" / f"{i:03d}-{y_var[:-5]}.pdf"
+        fig_output.parent.mkdir(exist_ok=True, parents=True)
+        single_chunk_plot(results).savefig(fig_output, format="pdf")
+
         chunk_predictions.append(results)
 
-        # TODO: Add heliocentric distance as parameter
-        # TODO: Add metrics calculation
-        # TODO: Add linear interpolation to outputs_dict
+        # After all 4 y variables, make a combined plot
+        if component_counter == 3:
+            full_fig_output = run_log_dir / "runtime-figs" / f"{i:03d}-combined.pdf"
+            full_fig_output.parent.mkdir(exist_ok=True, parents=True)
+            combined_chunk_plot(chunk_predictions[4 * i : 4 * i + 4]).savefig(
+                full_fig_output, format="pdf"
+            )
+
+            component_counter = 0
+
+        else:
+            component_counter += 1
+
         # TODO: Save data to file
         # TODO: Add loader function to concat
-
-    combined_chunk_plot(chunk_predictions)
-    plt.show()
+        # TODO: Add metrics calculation
+        # TODO: Add linear interpolation to outputs_dict
 
 
 @dataclass
@@ -194,10 +215,14 @@ def get_chunk_slices(
     ]
 
 
-def single_chunk_plot(chunk_results: ModelOutput, ax: Axes | None = None) -> None:
+def single_chunk_plot(chunk_results: ModelOutput, ax: Axes | None = None) -> Figure:
 
     if ax is None:
         fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+        if not isinstance(fig, Figure):
+            raise ValueError("Axis has no associated figure.")
 
     inputs = chunk_results.inputs
     outputs = chunk_results.outputs
@@ -210,7 +235,7 @@ def single_chunk_plot(chunk_results: ModelOutput, ax: Axes | None = None) -> Non
                 outputs["UTC"],
                 outputs[y],
                 color=Y_COLOURS[y],
-                label=y[:-4],
+                label=y[:-5],
                 zorder=5 - i,
             )
 
@@ -245,8 +270,10 @@ def single_chunk_plot(chunk_results: ModelOutput, ax: Axes | None = None) -> Non
         except KeyError:
             continue
 
+    return fig
 
-def combined_chunk_plot(multiple_chunk_results: list[ModelOutput]) -> None:
+
+def combined_chunk_plot(multiple_chunk_results: list[ModelOutput]) -> Figure:
     """
     Input is a list of ModelOutput where every 4 models correspond to the same
     period of time, but for |B|, Br, Bt, Bn individually.
@@ -272,6 +299,8 @@ def combined_chunk_plot(multiple_chunk_results: list[ModelOutput]) -> None:
         loc="lower right",
         ncol=4,
     )
+
+    return fig
 
 
 if __name__ == "__main__":
