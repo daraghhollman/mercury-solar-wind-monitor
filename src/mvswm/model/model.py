@@ -22,7 +22,7 @@ __all__ = [
 @dataclass
 class SolarWindModel:
     model: GPR | SGPR
-    data: Tuple[NDArray[np.datetime64], NDArray[Any]]
+    data: Tuple[NDArray[Any], NDArray[Any]]
     kernel: Kernel
     optimiser: Optimizer
     time_scaler: TimeScaler  # Store scaler on model for later inverse transforms
@@ -31,7 +31,8 @@ class SolarWindModel:
     @classmethod
     def build(
         cls,
-        input: NDArray[np.datetime64],
+        times: NDArray[np.datetime64],
+        distances: NDArray[np.float64],
         output: NDArray[Any],
         time_scaler: TimeScaler,
         kernel: Kernel,
@@ -49,11 +50,14 @@ class SolarWindModel:
         # Additionally, as GP models are based on distance between data, we want to use
         # small numerical values to aid in computation times. For this, we scale the
         # time between 0 and 1.
-        X = time_scaler.time_to_numeric(input)
+        t = time_scaler.time_to_numeric(times)
+        d = distances
+        X = np.hstack([t, d])
         Y = output
 
         rng = np.random.default_rng(seed)
-        inducing_points = rng.choice(X, size=n_inducing_points, replace=False)
+        inducing_indices = rng.choice(len(X), size=n_inducing_points, replace=False)
+        inducing_points = X[inducing_indices]
 
         gpmodel = SGPR(
             (X, Y),
