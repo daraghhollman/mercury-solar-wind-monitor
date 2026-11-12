@@ -11,6 +11,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
+import xarray as xr
 from gpflow.kernels import RationalQuadratic
 from matplotlib.axes import Axes
 from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
@@ -91,6 +92,8 @@ def main() -> None:
     # component into a single loop. This gives more frequent updates to tqdm.
     component_counter = 0
     runs = list(product(enumerate(chunk_slices), Y_VARS))
+    data_to_save: tuple[dict, dict, dict] = ({}, {}, {})
+
     for (i, this_chunk), y_var in tqdm(
         runs,
         desc="Fitting models",
@@ -180,23 +183,84 @@ def main() -> None:
 
         chunk_predictions.append(results)
 
+        # Accumulate column data for each chunk, cached over each MAG component.
+        # Resets every 4.
+        # Some columns will be overwritten each time.
+        data_to_save[0].update(
+            {
+                # X Train is used as the dimension coordinates
+                "R Train": inputs_dict["R Train"],
+                f"{Y_VARS[component_counter]} Train": inputs_dict["Y Train"],
+            }
+        ),
+        data_to_save[1].update(
+            {
+                # X Test is used as the dimension coordinates
+                "R Test": inputs_dict["R Test"],
+                f"{Y_VARS[component_counter]} Test": inputs_dict["Y Test"],
+            }
+        ),
+        data_to_save[2].update(
+            {
+                # Model X is used as the dimension coordinates
+                "R Model": r_range.ravel(),
+                f"{y_var} Model": y_mean.numpy().ravel(),
+                f"Var({y_var} Model)": y_variance.numpy().ravel(),
+            }
+        ),
+
         # After all 4 y variables, make a combined plot
+        output_file = run_log_dir / "run-data.nc"
         if component_counter == 3:
+            these_results = chunk_predictions[4 * i : 4 * i + 4]
+
             full_fig_output = run_log_dir / "runtime-figs" / f"{i:03d}-combined.pdf"
             full_fig_output.parent.mkdir(exist_ok=True, parents=True)
-            combined_chunk_plot(chunk_predictions[4 * i : 4 * i + 4]).savefig(
-                full_fig_output, format="pdf"
+            combined_chunk_plot(these_results).savefig(full_fig_output, format="pdf")
+
+            # Write data to file: one netCDF group per chunk. Each variable gets
+            # its own dimension, so unequal lengths are fine (no padding needed).
+            # Each chunk gets its own group in the file, so we can slice as we
+            # want later.
+
+            dims = ("UTC Train", "UTC Test", "UTC Model")
+            coords = (
+                inputs_dict["X Train"],
+                inputs_dict["X Test"],
+                t_range,
             )
+
+            dataset_vars = {}
+            for dim, group in zip(dims, data_to_save):
+                for name, values in group.items():
+                    dataset_vars[name] = (dim, np.asarray(values))
+
+            chunk_dataset = xr.Dataset(
+                dataset_vars,
+                coords={dim: np.asarray(c) for dim, c in zip(dims, coords)},
+            )
+
+            # First chunk creates/overwrites the file, later chunks append a group
+            write_mode = "w" if i == 0 else "a"
+
+            print(f"{'Creating' if i == 0 else 'Updating'} output file: {output_file}")
+            chunk_dataset.to_netcdf(
+                output_file, mode=write_mode, group=f"chunk_{i:03d}"
+            )
+
+            # A debug to check saving is working
+            tmp = xr.open_groups(output_file)
+            for group, ds in tmp.items():
+                print(ds)
+                ds.close()
+
+            # Reset cached data
+            data_to_save = ({}, {}, {})
 
             component_counter = 0
 
         else:
             component_counter += 1
-
-        # TODO: Save data to file
-        # TODO: Add loader function to concat
-        # TODO: Add metrics calculation
-        # TODO: Add linear interpolation to outputs_dict
 
 
 @dataclass
