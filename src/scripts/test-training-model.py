@@ -2,6 +2,11 @@
 Take a selection of data from the evalutation data set, and test applying a model.
 """
 
+from gpflow.utilities import parameter_dict
+from gpflow.utilities import print_summary
+from gpflow.kernels import SquaredExponential
+from gpflow.kernels import Periodic
+import gpflow
 import datetime as dt
 from dataclasses import dataclass
 from itertools import product
@@ -61,6 +66,7 @@ def main() -> None:
     gap_manager = GapManager.from_constants(
         gap_size_minutes=3 * 60,
         gap_interval_minutes=5 * 60,
+        # TODO: Add a random offset?
     )
     training_data, testing_data = gap_manager.split_data(data)
 
@@ -125,13 +131,27 @@ def main() -> None:
 
         time_scaler = TimeScaler(X_train_chunk)
 
+        scaled_day = time_scaler.timedelta_to_numeric(np.array(dt.timedelta(days=1)))
+
+        # Trying independent kernel dimensions.
+        kernel = (
+            # Random variance in the solar wind
+            RationalQuadratic(active_dims=[0])
+            # Systemic changes in heliocentric distance
+            + RationalQuadratic(active_dims=[1])
+            # Solar rotation periodicities
+            # We use a mutliply here has it is the values from the above kernel which should be repeating
+            + RationalQuadratic(active_dims=[0])
+            * Periodic(SquaredExponential(active_dims=[0]), period=32 * scaled_day)
+        )
+
         # Create model
         model = SolarWindModel.build(
             times=X_train_chunk,
             distances=R_train_chunk,
             output=Y_train_chunk,
             time_scaler=time_scaler,
-            kernel=RationalQuadratic(),
+            kernel=kernel,
             n_inducing_points=n_inducing_points,
             seed=0,
         )
@@ -176,6 +196,9 @@ def main() -> None:
         }
 
         results = ModelOutput(outputs_dict, inputs_dict, model)
+
+        # Print summary of model
+        print_summary(kernel, fmt="simple")
 
         fig_output = run_log_dir / "runtime-figs" / f"{i:03d}-{y_var[:-5]}.pdf"
         fig_output.parent.mkdir(exist_ok=True, parents=True)
